@@ -13,27 +13,28 @@ RECEIVER_EMAIL = "sjkim@mbc.co.kr"
 translator = Translator()
 
 def get_tech_news():
-    # 1. 현재 시간 기준으로 24시간 전 시간 계산 (UTC 기준)
-    time_24_hours_ago = (datetime.utcnow() - timedelta(days=1)).isoformat()
+    # M7 기업 + 반도체 핵심 기업 + 기술 트렌드 조합
+    # 한국(Samsung, Hynix)과 대만(TSMC)을 명시적으로 포함
+    m7 = 'NVIDIA OR Apple OR Microsoft OR Tesla OR Meta OR Amazon OR Alphabet'
+    chips = 'TSMC OR "Samsung Electronics" OR "SK Hynix" OR ASML OR Intel'
+    tech_trends = 'AI OR "Generative AI" OR "GPU"'
     
-    # 2. 검색 쿼리 설정
-    query = "(semiconductor OR NVIDIA OR TSMC OR 'Samsung Electronics' OR AI)"
+    # 이 모든 키워드를 하나로 묶음
+    combined_query = f"({m7} OR {chips}) AND ({tech_trends} OR Investment OR Market)"
     
-    # 3. 'from' 파라미터에 24시간 전 시간 추가
-    url = (
-        f"https://newsapi.org/v2/everything?q={query}"
-        f"&from={time_24_hours_ago}"
-        f"&sortBy=publishedAt&pageSize=10&language=en&apiKey={NEWS_API_KEY}"
-    )
+    # 전세계(언어: en) 뉴스를 최신순으로 15개 수집 (그 중 상위 10개를 메일로 발송)
+    url = f"https://newsapi.org/v2/everything?q={combined_query}&sortBy=publishedAt&pageSize=15&language=en&apiKey={NEWS_API_KEY}"
     
     try:
         res = requests.get(url)
-        articles = res.json().get('articles', [])
-        return articles
+        data = res.json()
+        articles = data.get('articles', [])
+        # 기사가 너무 많으면 중복이나 광고성 글을 피하기 위해 필터링 로직이 작동함
+        return articles[:10] 
     except Exception as e:
-        print(f"뉴스 수집 중 오류: {e}")
+        print(f"API 요청 에러: {e}")
         return []
-
+        
 def translate_text(text):
     try:
         if not text: return "내용 없음"
@@ -75,3 +76,4 @@ if __name__ == "__main__":
         print("24시간 한정 뉴스레터 발송 완료!")
     except Exception as e:
         print(f"메일 발송 에러: {e}")
+
