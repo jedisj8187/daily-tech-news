@@ -1,4 +1,4 @@
-import os, requests, smtplib
+import os, re, requests, smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from datetime import datetime, timedelta
@@ -12,28 +12,183 @@ RECEIVER_EMAIL = "sjkim@mbc.co.kr"
 
 translator = Translator()
 
+# ──────────────────────────────────────────────
+# 1. 신뢰할 수 있는 출처 (Tier별 가중치)
+# ──────────────────────────────────────────────
+TIER1_SOURCES = {
+    'reuters.com', 'apnews.com', 'bloomberg.com', 'wsj.com',
+    'nytimes.com', 'ft.com', 'bbc.com', 'bbc.co.uk',
+}
+TIER2_SOURCES = {
+    'techcrunch.com', 'theverge.com', 'arstechnica.com', 'wired.com',
+    'cnbc.com', 'fortune.com', 'businessinsider.com',
+    'tomshardware.com', 'anandtech.com', 'semianalysis.com',
+}
+TIER3_SOURCES = {
+    'zdnet.com', 'cnet.com', 'engadget.com', 'venturebeat.com',
+    'theinformation.com', 'protocol.com', 'thenextweb.com',
+    'macrumors.com', '9to5mac.com', 'electrek.co',
+}
+
+# ──────────────────────────────────────────────
+# 2. 관련성 키워드 (카테고리별 가중치)
+# ──────────────────────────────────────────────
+HIGH_VALUE_KEYWORDS = [
+    'earnings', 'revenue', 'acquisition', 'merger', 'antitrust',
+    'regulation', 'breakthrough', 'launch', 'partnership',
+    'quarterly results', 'guidance', 'forecast',
+]
+CORE_TECH_KEYWORDS = [
+    'AI', 'artificial intelligence', 'generative AI', 'LLM',
+    'GPU', 'semiconductor', 'chip', 'foundry', 'HBM',
+    'data center', 'cloud computing', 'autonomous driving',
+    'quantum computing', 'robotics', 'humanoid',
+]
+
+# ──────────────────────────────────────────────
+# 3. 스팸/광고 필터 패턴
+# ──────────────────────────────────────────────
+SPAM_PATTERNS = [
+    r'(?i)\b(buy now|discount|coupon|promo code|limited offer)\b',
+    r'(?i)\b(click here|subscribe now|sign up free)\b',
+    r'(?i)\b(sponsored|advertisement|paid content|partner content)\b',
+    r'(?i)\b(horoscope|lottery|casino|crypto airdrop)\b',
+    r'(?i)^\d+\s+(best|top)\s+',  # "10 best ..." 리스트형 낚시 기사
+]
+
+
+def _source_domain(article):
+    """기사 URL에서 도메인 추출"""
+    url = article.get('url', '')
+    match = re.search(r'https?://(?:www\.)?([^/]+)', url)
+    return match.group(1).lower() if match else ''
+
+
+def _source_score(article):
+    """출처 신뢰도 점수 (0~30)"""
+    domain = _source_domain(article)
+    if any(s in domain for s in TIER1_SOURCES):
+        return 30
+    if any(s in domain for s in TIER2_SOURCES):
+        return 20
+    if any(s in domain for s in TIER3_SOURCES):
+        return 10
+    return 0
+
+
+def _relevance_score(article):
+    """키워드 관련성 점수 (0~40)"""
+    text = f"{article.get('title', '')} {article.get('description', '')}".lower()
+    score = 0
+    for kw in HIGH_VALUE_KEYWORDS:
+        if kw.lower() in text:
+            score += 5
+    for kw in CORE_TECH_KEYWORDS:
+        if kw.lower() in text:
+            score += 3
+    return min(score, 40)
+
+
+def _recency_score(article):
+    """최신성 점수 (0~20) — 최근 6시간 이내 기사 우대"""
+    published = article.get('publishedAt', '')
+    try:
+        pub_dt = datetime.strptime(published, '%Y-%m-%dT%H:%M:%SZ')
+        hours_ago = (datetime.utcnow() - pub_dt).total_seconds() / 3600
+        if hours_ago <= 6:
+            return 20
+        elif hours_ago <= 12:
+            return 15
+        elif hours_ago <= 24:
+            return 10
+        return 5
+    except (ValueError, TypeError):
+        return 5
+
+
+def _is_spam(article):
+    """스팸/광고성 기사 판별"""
+    text = f"{article.get('title', '')} {article.get('description', '')}"
+    return any(re.search(p, text) for p in SPAM_PATTERNS)
+
+
+def _is_duplicate(article, seen_titles):
+    """제목 유사도 기반 중복 기사 판별"""
+    title = article.get('title', '').lower().strip()
+    if not title:
+        return True
+    # 제목에서 핵심 단어만 추출하여 비교 (짧은 공통 단어 제거)
+    words = set(re.findall(r'[a-z]{4,}', title))
+    for seen in seen_titles:
+        overlap = words & seen
+        # 핵심 단어의 60% 이상이 겹치면 중복으로 판단
+        if words and len(overlap) / len(words) >= 0.6:
+            return True
+    seen_titles.append(words)
+    return False
+
+
+def _total_score(article):
+    """종합 점수 = 출처(30) + 관련성(40) + 최신성(20) + 보너스(10)"""
+    score = _source_score(article) + _relevance_score(article) + _recency_score(article)
+    # 이미지가 있는 기사에 소폭 보너스
+    if article.get('urlToImage'):
+        score += 5
+    # 설명이 충분히 긴 기사에 보너스 (내용이 알찬 기사일 가능성)
+    desc = article.get('description', '') or ''
+    if len(desc) >= 100:
+        score += 5
+    return score
+
+
 def get_tech_news():
-    # M7 기업 + 반도체 핵심 기업 + 기술 트렌드 조합
-    # 한국(Samsung, Hynix)과 대만(TSMC)을 명시적으로 포함
+    # ── 검색 쿼리: M7 + 반도체 + 기술 트렌드 ──
     m7 = 'NVIDIA OR Apple OR Microsoft OR Tesla OR Meta OR Amazon OR Alphabet'
     chips = 'TSMC OR "Samsung Electronics" OR "SK Hynix" OR ASML OR Intel'
-    tech_trends = 'AI OR "Generative AI" OR "GPU"'
-    
-    # 이 모든 키워드를 하나로 묶음
-    combined_query = f"({m7} OR {chips}) AND ({tech_trends} OR Investment OR Market)"
-    
-    # 전세계(언어: en) 뉴스를 최신순으로 15개 수집 (그 중 상위 10개를 메일로 발송)
-    url = f"https://newsapi.org/v2/everything?q={combined_query}&sortBy=publishedAt&pageSize=15&language=en&apiKey={NEWS_API_KEY}"
-    
+    tech_trends = 'AI OR "Generative AI" OR GPU OR Semiconductor OR "Data Center"'
+
+    combined_query = f"({m7} OR {chips}) AND ({tech_trends} OR Investment OR Market OR Earnings)"
+
+    # 넉넉하게 50개를 가져온 뒤 필터링·스코어링으로 상위 10개 선별
+    url = (
+        f"https://newsapi.org/v2/everything?"
+        f"q={combined_query}&sortBy=publishedAt&pageSize=50"
+        f"&language=en&apiKey={NEWS_API_KEY}"
+    )
+
     try:
         res = requests.get(url)
         data = res.json()
         articles = data.get('articles', [])
-        # 기사가 너무 많으면 중복이나 광고성 글을 피하기 위해 필터링 로직이 작동함
-        return articles[:10] 
     except Exception as e:
         print(f"API 요청 에러: {e}")
         return []
+
+    # ── 필터링 파이프라인 ──
+    # 1단계: 스팸/광고 제거
+    articles = [a for a in articles if not _is_spam(a)]
+
+    # 2단계: [Removed] 표기 기사 제거 (News API에서 삭제된 기사)
+    articles = [a for a in articles if a.get('title') and '[Removed]' not in a['title']]
+
+    # 3단계: 중복 기사 제거
+    seen_titles = []
+    unique_articles = []
+    for a in articles:
+        if not _is_duplicate(a, seen_titles):
+            unique_articles.append(a)
+    articles = unique_articles
+
+    # 4단계: 종합 점수 기반 정렬
+    articles.sort(key=_total_score, reverse=True)
+
+    # 상위 10개 선별
+    top_articles = articles[:10]
+    print(f"[선별 결과] 전체 {len(data.get('articles', []))}건 → 필터링 후 {len(articles)}건 → 최종 {len(top_articles)}건")
+    for i, a in enumerate(top_articles, 1):
+        print(f"  {i}. [{_total_score(a)}점] {a.get('title', '')[:60]}... ({_source_domain(a)})")
+
+    return top_articles
         
 def translate_text(text):
     try:
@@ -52,17 +207,30 @@ if __name__ == "__main__":
 
     if articles:
         items_html = ""
-        for art in articles:
+        for i, art in enumerate(articles, 1):
             ko_title = translate_text(art['title'])
             ko_desc = translate_text(art.get('description', '본문 내용 없음'))
+            source_name = art.get('source', {}).get('name', '알 수 없음')
+            score = _total_score(art)
+            # 점수 구간별 뱃지 색상
+            if score >= 60:
+                badge_color, badge_text = '#d93025', '🔴 TOP'
+            elif score >= 40:
+                badge_color, badge_text = '#f9a825', '🟡 주목'
+            else:
+                badge_color, badge_text = '#aaa', '⚪ 일반'
             items_html += f"""
             <div style='margin-bottom:25px; border-bottom:1px solid #eee; padding-bottom:15px;'>
-                <h3 style='color:#1a73e8; margin-bottom:10px;'>{ko_title}</h3>
-                <p style='color:#555; font-size:14px;'>{ko_desc}</p>
-                <a href='{art['url']}' style='color:#1a73e8; text-decoration:none; font-size:13px;'>원문보기(EN) →</a>
+                <div style='display:flex; align-items:center; margin-bottom:8px;'>
+                    <span style='background:{badge_color}; color:#fff; padding:2px 8px; border-radius:10px; font-size:11px; margin-right:8px;'>{badge_text}</span>
+                    <span style='color:#999; font-size:12px;'>{source_name} · 관련도 {score}점</span>
+                </div>
+                <h3 style='color:#1a73e8; margin:0 0 10px 0;'>{ko_title}</h3>
+                <p style='color:#555; font-size:14px; margin:0 0 10px 0;'>{ko_desc}</p>
+                <a href='{art["url"]}' style='color:#1a73e8; text-decoration:none; font-size:13px;'>원문보기(EN) →</a>
             </div>
             """
-        body = f"<html><body><h2 style='color:#333;'>지난 24시간 주요 테크 뉴스</h2>{items_html}</body></html>"
+        body = f"<html><body><h2 style='color:#333;'>지난 24시간 주요 테크 뉴스 (AI 선별)</h2>{items_html}</body></html>"
     else:
         body = "<html><body><h2>최근 24시간 내에 수집된 뉴스가 없습니다.</h2><p>검색 범위를 조정하거나 다음 실행을 기다려주세요.</p></body></html>"
 
