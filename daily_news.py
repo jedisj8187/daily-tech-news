@@ -46,7 +46,33 @@ CORE_TECH_KEYWORDS = [
 ]
 
 # ──────────────────────────────────────────────
-# 3. 스팸/광고 필터 패턴
+# 3. 투자자 영향도 키워드 (가중치별 분류)
+# ──────────────────────────────────────────────
+# 주가·시가총액에 직접 영향을 주는 이벤트
+INVESTOR_HIGH_IMPACT = [
+    'earnings', 'quarterly results', 'revenue miss', 'revenue beat',
+    'profit warning', 'guidance', 'forecast', 'downgrade', 'upgrade',
+    'price target', 'stock split', 'buyback', 'share repurchase',
+    'dividend', 'IPO', 'delisting', 'SEC', 'investigation',
+    'class action', 'insider trading', 'short selling',
+]
+# 중장기 투자 판단에 영향을 주는 구조적 이벤트
+INVESTOR_MID_IMPACT = [
+    'acquisition', 'merger', 'takeover', 'antitrust', 'regulation',
+    'tariff', 'sanction', 'export ban', 'supply chain',
+    'market share', 'market cap', 'valuation', 'analyst',
+    'hedge fund', 'institutional investor', 'activist investor',
+    'bond', 'credit rating', 'bankruptcy', 'restructuring',
+]
+# 시장 심리·매크로 환경
+INVESTOR_SENTIMENT = [
+    'bull market', 'bear market', 'rally', 'sell-off', 'crash',
+    'volatility', 'inflation', 'interest rate', 'fed', 'recession',
+    'GDP', 'unemployment', 'consumer spending', 'yield curve',
+]
+
+# ──────────────────────────────────────────────
+# 4. 스팸/광고 필터 패턴
 # ──────────────────────────────────────────────
 SPAM_PATTERNS = [
     r'(?i)\b(buy now|discount|coupon|promo code|limited offer)\b',
@@ -65,45 +91,64 @@ def _source_domain(article):
 
 
 def _source_score(article):
-    """출처 신뢰도 점수 (0~30)"""
+    """출처 신뢰도 점수 (0~25)"""
     domain = _source_domain(article)
     if any(s in domain for s in TIER1_SOURCES):
-        return 30
+        return 25
     if any(s in domain for s in TIER2_SOURCES):
-        return 20
+        return 17
     if any(s in domain for s in TIER3_SOURCES):
-        return 10
+        return 8
     return 0
 
 
 def _relevance_score(article):
-    """키워드 관련성 점수 (0~40)"""
+    """키워드 관련성 점수 (0~25)"""
     text = f"{article.get('title', '')} {article.get('description', '')}".lower()
     score = 0
     for kw in HIGH_VALUE_KEYWORDS:
         if kw.lower() in text:
-            score += 5
+            score += 4
     for kw in CORE_TECH_KEYWORDS:
         if kw.lower() in text:
             score += 3
-    return min(score, 40)
+    return min(score, 25)
+
+
+def _investor_impact_score(article):
+    """투자자 영향도 점수 (0~30)"""
+    text = f"{article.get('title', '')} {article.get('description', '')}".lower()
+    score = 0
+    # 직접 영향 이벤트 (가장 높은 가중치)
+    for kw in INVESTOR_HIGH_IMPACT:
+        if kw.lower() in text:
+            score += 5
+    # 구조적 이벤트 (중간 가중치)
+    for kw in INVESTOR_MID_IMPACT:
+        if kw.lower() in text:
+            score += 3
+    # 시장 심리·매크로 (낮은 가중치)
+    for kw in INVESTOR_SENTIMENT:
+        if kw.lower() in text:
+            score += 2
+    return min(score, 30)
 
 
 def _recency_score(article):
-    """최신성 점수 (0~20) — 최근 6시간 이내 기사 우대"""
+    """최신성 점수 (0~15) — 최근 6시간 이내 기사 우대"""
     published = article.get('publishedAt', '')
     try:
         pub_dt = datetime.strptime(published, '%Y-%m-%dT%H:%M:%SZ')
         hours_ago = (datetime.utcnow() - pub_dt).total_seconds() / 3600
         if hours_ago <= 6:
-            return 20
-        elif hours_ago <= 12:
             return 15
+        elif hours_ago <= 12:
+            return 11
         elif hours_ago <= 24:
-            return 10
-        return 5
+            return 7
+        return 3
     except (ValueError, TypeError):
-        return 5
+        return 3
 
 
 def _is_spam(article):
@@ -129,15 +174,19 @@ def _is_duplicate(article, seen_titles):
 
 
 def _total_score(article):
-    """종합 점수 = 출처(30) + 관련성(40) + 최신성(20) + 보너스(10)"""
-    score = _source_score(article) + _relevance_score(article) + _recency_score(article)
-    # 이미지가 있는 기사에 소폭 보너스
+    """종합 점수 = 출처(25) + 관련성(25) + 투자자영향도(30) + 최신성(15) + 보너스(5)"""
+    score = (
+        _source_score(article)
+        + _relevance_score(article)
+        + _investor_impact_score(article)
+        + _recency_score(article)
+    )
+    # 이미지가 있고 설명이 충분한 기사에 소폭 보너스
     if article.get('urlToImage'):
-        score += 5
-    # 설명이 충분히 긴 기사에 보너스 (내용이 알찬 기사일 가능성)
+        score += 3
     desc = article.get('description', '') or ''
     if len(desc) >= 100:
-        score += 5
+        score += 2
     return score
 
 
@@ -212,6 +261,7 @@ if __name__ == "__main__":
             ko_desc = translate_text(art.get('description', '본문 내용 없음'))
             source_name = art.get('source', {}).get('name', '알 수 없음')
             score = _total_score(art)
+            inv_score = _investor_impact_score(art)
             # 점수 구간별 뱃지 색상
             if score >= 60:
                 badge_color, badge_text = '#d93025', '🔴 TOP'
@@ -219,11 +269,19 @@ if __name__ == "__main__":
                 badge_color, badge_text = '#f9a825', '🟡 주목'
             else:
                 badge_color, badge_text = '#aaa', '⚪ 일반'
+            # 투자자 영향도 뱃지
+            if inv_score >= 20:
+                inv_badge = '<span style="background:#d93025; color:#fff; padding:2px 6px; border-radius:10px; font-size:10px; margin-left:5px;">📈 투자영향 높음</span>'
+            elif inv_score >= 10:
+                inv_badge = '<span style="background:#f9a825; color:#fff; padding:2px 6px; border-radius:10px; font-size:10px; margin-left:5px;">📊 투자영향 중간</span>'
+            else:
+                inv_badge = ''
             items_html += f"""
             <div style='margin-bottom:25px; border-bottom:1px solid #eee; padding-bottom:15px;'>
-                <div style='display:flex; align-items:center; margin-bottom:8px;'>
+                <div style='display:flex; align-items:center; flex-wrap:wrap; margin-bottom:8px;'>
                     <span style='background:{badge_color}; color:#fff; padding:2px 8px; border-radius:10px; font-size:11px; margin-right:8px;'>{badge_text}</span>
-                    <span style='color:#999; font-size:12px;'>{source_name} · 관련도 {score}점</span>
+                    <span style='color:#999; font-size:12px;'>{source_name} · 종합 {score}점</span>
+                    {inv_badge}
                 </div>
                 <h3 style='color:#1a73e8; margin:0 0 10px 0;'>{ko_title}</h3>
                 <p style='color:#555; font-size:14px; margin:0 0 10px 0;'>{ko_desc}</p>
