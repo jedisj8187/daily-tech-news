@@ -14,7 +14,7 @@ jobs:
         with:
           python-version: '3.9'
       - name: Install dependencies
-        run: pip install requests googletrans==4.0.0-rc1
+        run: pip install requests deep-translator
       - name: Run Script
         env:
           NEWS_API_KEY: ${{ secrets.NEWS_API_KEY }}

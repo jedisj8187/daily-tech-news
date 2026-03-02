@@ -2,15 +2,13 @@ import os, re, requests, smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from datetime import datetime, timedelta
-from googletrans import Translator
+from deep_translator import GoogleTranslator
 
 # 환경 변수 로드
 NEWS_API_KEY = os.getenv("NEWS_API_KEY")
 GMAIL_USER = os.getenv("GMAIL_USER")
 GMAIL_APP_PW = os.getenv("GMAIL_APP_PW")
 RECEIVER_EMAIL = "sjkim@mbc.co.kr"
-
-translator = Translator()
 
 # ──────────────────────────────────────────────
 # 1. 신뢰할 수 있는 출처 (Tier별 가중치)
@@ -162,12 +160,18 @@ def _is_duplicate(article, seen_titles):
     title = article.get('title', '').lower().strip()
     if not title:
         return True
-    # 제목에서 핵심 단어만 추출하여 비교 (짧은 공통 단어 제거)
-    words = set(re.findall(r'[a-z]{4,}', title))
+    # 영문 4글자 이상 단어 + CJK(한중일) 문자 2글자 이상 토큰
+    words = set(re.findall(r'[a-z]{4,}|[\u3040-\u9fff]{2,}', title))
+    if not words:
+        # 토큰 추출 실패 시 제목 전체로 비교 (완전 일치만 중복)
+        for seen in seen_titles:
+            if title in seen or seen <= {title}:
+                return True
+        seen_titles.append({title})
+        return False
     for seen in seen_titles:
         overlap = words & seen
-        # 핵심 단어의 60% 이상이 겹치면 중복으로 판단
-        if words and len(overlap) / len(words) >= 0.6:
+        if len(overlap) / len(words) >= 0.6:
             return True
     seen_titles.append(words)
     return False
@@ -232,31 +236,15 @@ def get_tech_news():
     return top
 
 
-# ──────────────────────────────────────────────
-# 일본·중국 메이저 언론사 도메인
-# ──────────────────────────────────────────────
-JAPAN_MAJOR_DOMAINS = (
-    'nikkei.com,nhk.or.jp,asahi.com,mainichi.jp,'
-    'yomiuri.co.jp,sankei.com,reuters.co.jp,nikkei225jp.com,'
-    'itmedia.co.jp,impress.co.jp,nikkan.co.jp'
-)
-CHINA_MAJOR_DOMAINS = (
-    'scmp.com,caixin.com,yicai.com,sina.com.cn,163.com,'
-    'sohu.com,people.com.cn,xinhuanet.com,thepaper.cn,'
-    'jiemian.com,36kr.com,cls.cn'
-)
-
-
 def get_japan_news():
-    """일본 메이저 언론 테크 뉴스 (상위 3개)"""
+    """일본 테크 뉴스 (상위 3개)"""
     query = (
-        'AI OR 半導体 OR GPU OR テクノロジー OR 人工知能 OR データセンター '
+        'AI OR 半導体 OR GPU OR テクノロジー OR 人工知能 '
         'OR NVIDIA OR ソニー OR トヨタ OR 東京エレクトロン OR ソフトバンク'
     )
     url = (
         f"https://newsapi.org/v2/everything?"
         f"q={query}&sortBy=publishedAt&pageSize=20"
-        f"&domains={JAPAN_MAJOR_DOMAINS}"
         f"&language=ja&apiKey={NEWS_API_KEY}"
     )
 
@@ -276,7 +264,7 @@ def get_japan_news():
 
 
 def get_china_news():
-    """중국 메이저 언론 테크 뉴스 (상위 3개)"""
+    """중국 테크 뉴스 (상위 3개)"""
     query = (
         'AI OR 芯片 OR 半导体 OR 人工智能 OR 数据中心 '
         'OR 华为 OR 阿里巴巴 OR 腾讯 OR 百度 OR 比亚迪 OR 小米'
@@ -284,7 +272,6 @@ def get_china_news():
     url = (
         f"https://newsapi.org/v2/everything?"
         f"q={query}&sortBy=publishedAt&pageSize=20"
-        f"&domains={CHINA_MAJOR_DOMAINS}"
         f"&language=zh&apiKey={NEWS_API_KEY}"
     )
 
@@ -304,9 +291,12 @@ def get_china_news():
         
 def translate_text(text, src='en'):
     try:
-        if not text: return "내용 없음"
-        return translator.translate(text, src=src, dest='ko').text
-    except:
+        if not text:
+            return "내용 없음"
+        # deep_translator는 최대 5000자 제한
+        text = text[:4500]
+        return GoogleTranslator(source=src, target='ko').translate(text)
+    except Exception:
         return text
 
 
@@ -332,7 +322,7 @@ def _build_article_html(art, src_lang='en', label_suffix=''):
     else:
         inv_badge = ''
 
-    lang_labels = {'en': 'EN', 'ja': 'JP', 'zh': 'CN'}
+    lang_labels = {'en': 'EN', 'ja': 'JP', 'zh-CN': 'CN'}
     orig_label = lang_labels.get(src_lang, src_lang.upper())
 
     return f"""
@@ -377,7 +367,7 @@ if __name__ == "__main__":
         body_parts += "<p style='color:#888; font-size:13px; margin-top:0;'>미국·일본·중국 3개국 테크 뉴스를 한눈에</p>"
         body_parts += _build_section_html("미국 / 글로벌 뉴스", "🇺🇸", articles_us, src_lang='en')
         body_parts += _build_section_html("일본 테크 뉴스", "🇯🇵", articles_jp, src_lang='ja')
-        body_parts += _build_section_html("중국 테크 뉴스", "🇨🇳", articles_cn, src_lang='zh')
+        body_parts += _build_section_html("중국 테크 뉴스", "🇨🇳", articles_cn, src_lang='zh-CN')
         body_parts += "</body></html>"
         body = body_parts
     else:
