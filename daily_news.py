@@ -190,15 +190,27 @@ def _total_score(article):
     return score
 
 
+def _filter_and_rank(articles, top_n=10):
+    """공통 필터링 파이프라인: 스팸제거 → Removed제거 → 중복제거 → 점수정렬"""
+    articles = [a for a in articles if not _is_spam(a)]
+    articles = [a for a in articles if a.get('title') and '[Removed]' not in a['title']]
+    seen_titles = []
+    unique = []
+    for a in articles:
+        if not _is_duplicate(a, seen_titles):
+            unique.append(a)
+    unique.sort(key=_total_score, reverse=True)
+    return unique[:top_n]
+
+
 def get_tech_news():
-    # ── 검색 쿼리: M7 + 반도체 + 기술 트렌드 ──
+    """미국/글로벌 영어권 테크 뉴스 (상위 10개)"""
     m7 = 'NVIDIA OR Apple OR Microsoft OR Tesla OR Meta OR Amazon OR Alphabet'
     chips = 'TSMC OR "Samsung Electronics" OR "SK Hynix" OR ASML OR Intel'
     tech_trends = 'AI OR "Generative AI" OR GPU OR Semiconductor OR "Data Center"'
 
     combined_query = f"({m7} OR {chips}) AND ({tech_trends} OR Investment OR Market OR Earnings)"
 
-    # 넉넉하게 50개를 가져온 뒤 필터링·스코어링으로 상위 10개 선별
     url = (
         f"https://newsapi.org/v2/everything?"
         f"q={combined_query}&sortBy=publishedAt&pageSize=50"
@@ -210,85 +222,164 @@ def get_tech_news():
         data = res.json()
         articles = data.get('articles', [])
     except Exception as e:
-        print(f"API 요청 에러: {e}")
+        print(f"[미국] API 요청 에러: {e}")
         return []
 
-    # ── 필터링 파이프라인 ──
-    # 1단계: 스팸/광고 제거
-    articles = [a for a in articles if not _is_spam(a)]
-
-    # 2단계: [Removed] 표기 기사 제거 (News API에서 삭제된 기사)
-    articles = [a for a in articles if a.get('title') and '[Removed]' not in a['title']]
-
-    # 3단계: 중복 기사 제거
-    seen_titles = []
-    unique_articles = []
-    for a in articles:
-        if not _is_duplicate(a, seen_titles):
-            unique_articles.append(a)
-    articles = unique_articles
-
-    # 4단계: 종합 점수 기반 정렬
-    articles.sort(key=_total_score, reverse=True)
-
-    # 상위 10개 선별
-    top_articles = articles[:10]
-    print(f"[선별 결과] 전체 {len(data.get('articles', []))}건 → 필터링 후 {len(articles)}건 → 최종 {len(top_articles)}건")
-    for i, a in enumerate(top_articles, 1):
+    top = _filter_and_rank(articles, top_n=10)
+    print(f"[미국] 전체 {len(data.get('articles', []))}건 → 최종 {len(top)}건")
+    for i, a in enumerate(top, 1):
         print(f"  {i}. [{_total_score(a)}점] {a.get('title', '')[:60]}... ({_source_domain(a)})")
+    return top
 
-    return top_articles
+
+# ──────────────────────────────────────────────
+# 일본·중국 메이저 언론사 도메인
+# ──────────────────────────────────────────────
+JAPAN_MAJOR_DOMAINS = (
+    'nikkei.com,nhk.or.jp,asahi.com,mainichi.jp,'
+    'yomiuri.co.jp,sankei.com,reuters.co.jp,nikkei225jp.com,'
+    'itmedia.co.jp,impress.co.jp,nikkan.co.jp'
+)
+CHINA_MAJOR_DOMAINS = (
+    'scmp.com,caixin.com,yicai.com,sina.com.cn,163.com,'
+    'sohu.com,people.com.cn,xinhuanet.com,thepaper.cn,'
+    'jiemian.com,36kr.com,cls.cn'
+)
+
+
+def get_japan_news():
+    """일본 메이저 언론 테크 뉴스 (상위 3개)"""
+    query = (
+        'AI OR 半導体 OR GPU OR テクノロジー OR 人工知能 OR データセンター '
+        'OR NVIDIA OR ソニー OR トヨタ OR 東京エレクトロン OR ソフトバンク'
+    )
+    url = (
+        f"https://newsapi.org/v2/everything?"
+        f"q={query}&sortBy=publishedAt&pageSize=20"
+        f"&domains={JAPAN_MAJOR_DOMAINS}"
+        f"&language=ja&apiKey={NEWS_API_KEY}"
+    )
+
+    try:
+        res = requests.get(url)
+        data = res.json()
+        articles = data.get('articles', [])
+    except Exception as e:
+        print(f"[일본] API 요청 에러: {e}")
+        return []
+
+    top = _filter_and_rank(articles, top_n=3)
+    print(f"[일본] 전체 {len(data.get('articles', []))}건 → 최종 {len(top)}건")
+    for i, a in enumerate(top, 1):
+        print(f"  {i}. {a.get('title', '')[:60]}... ({_source_domain(a)})")
+    return top
+
+
+def get_china_news():
+    """중국 메이저 언론 테크 뉴스 (상위 3개)"""
+    query = (
+        'AI OR 芯片 OR 半导体 OR 人工智能 OR 数据中心 '
+        'OR 华为 OR 阿里巴巴 OR 腾讯 OR 百度 OR 比亚迪 OR 小米'
+    )
+    url = (
+        f"https://newsapi.org/v2/everything?"
+        f"q={query}&sortBy=publishedAt&pageSize=20"
+        f"&domains={CHINA_MAJOR_DOMAINS}"
+        f"&language=zh&apiKey={NEWS_API_KEY}"
+    )
+
+    try:
+        res = requests.get(url)
+        data = res.json()
+        articles = data.get('articles', [])
+    except Exception as e:
+        print(f"[중국] API 요청 에러: {e}")
+        return []
+
+    top = _filter_and_rank(articles, top_n=3)
+    print(f"[중국] 전체 {len(data.get('articles', []))}건 → 최종 {len(top)}건")
+    for i, a in enumerate(top, 1):
+        print(f"  {i}. {a.get('title', '')[:60]}... ({_source_domain(a)})")
+    return top
         
-def translate_text(text):
+def translate_text(text, src='en'):
     try:
         if not text: return "내용 없음"
-        return translator.translate(text, src='en', dest='ko').text
+        return translator.translate(text, src=src, dest='ko').text
     except:
         return text
 
+
+def _build_article_html(art, src_lang='en', label_suffix=''):
+    """기사 하나를 HTML 블록으로 변환"""
+    ko_title = translate_text(art['title'], src=src_lang)
+    ko_desc = translate_text(art.get('description', '본문 내용 없음'), src=src_lang)
+    source_name = art.get('source', {}).get('name', '알 수 없음')
+    score = _total_score(art)
+    inv_score = _investor_impact_score(art)
+
+    if score >= 60:
+        badge_color, badge_text = '#d93025', '🔴 TOP'
+    elif score >= 40:
+        badge_color, badge_text = '#f9a825', '🟡 주목'
+    else:
+        badge_color, badge_text = '#aaa', '⚪ 일반'
+
+    if inv_score >= 20:
+        inv_badge = '<span style="background:#d93025; color:#fff; padding:2px 6px; border-radius:10px; font-size:10px; margin-left:5px;">📈 투자영향 높음</span>'
+    elif inv_score >= 10:
+        inv_badge = '<span style="background:#f9a825; color:#fff; padding:2px 6px; border-radius:10px; font-size:10px; margin-left:5px;">📊 투자영향 중간</span>'
+    else:
+        inv_badge = ''
+
+    lang_labels = {'en': 'EN', 'ja': 'JP', 'zh': 'CN'}
+    orig_label = lang_labels.get(src_lang, src_lang.upper())
+
+    return f"""
+    <div style='margin-bottom:25px; border-bottom:1px solid #eee; padding-bottom:15px;'>
+        <div style='display:flex; align-items:center; flex-wrap:wrap; margin-bottom:8px;'>
+            <span style='background:{badge_color}; color:#fff; padding:2px 8px; border-radius:10px; font-size:11px; margin-right:8px;'>{badge_text}</span>
+            <span style='color:#999; font-size:12px;'>{source_name} · 종합 {score}점</span>
+            {inv_badge}
+        </div>
+        <h3 style='color:#1a73e8; margin:0 0 10px 0;'>{ko_title}</h3>
+        <p style='color:#555; font-size:14px; margin:0 0 10px 0;'>{ko_desc}</p>
+        <a href='{art["url"]}' style='color:#1a73e8; text-decoration:none; font-size:13px;'>원문보기({orig_label}) →</a>
+    </div>
+    """
+
+
+def _build_section_html(title, flag, articles, src_lang='en'):
+    """섹션 헤더 + 기사 목록 HTML"""
+    if not articles:
+        return ""
+    html = f"<h2 style='color:#333; border-left:4px solid #1a73e8; padding-left:10px; margin-top:35px;'>{flag} {title}</h2>"
+    for art in articles:
+        html += _build_article_html(art, src_lang=src_lang)
+    return html
+
+
 if __name__ == "__main__":
-    articles = get_tech_news()
-    
+    articles_us = get_tech_news()
+    articles_jp = get_japan_news()
+    articles_cn = get_china_news()
+
     msg = MIMEMultipart()
     msg['Subject'] = f"[Tech 24h] {datetime.now().strftime('%m/%d')} 핵심 뉴스레터"
     msg['From'] = f"Tech Bot <{GMAIL_USER}>"
     msg['To'] = RECEIVER_EMAIL
 
-    if articles:
-        items_html = ""
-        for i, art in enumerate(articles, 1):
-            ko_title = translate_text(art['title'])
-            ko_desc = translate_text(art.get('description', '본문 내용 없음'))
-            source_name = art.get('source', {}).get('name', '알 수 없음')
-            score = _total_score(art)
-            inv_score = _investor_impact_score(art)
-            # 점수 구간별 뱃지 색상
-            if score >= 60:
-                badge_color, badge_text = '#d93025', '🔴 TOP'
-            elif score >= 40:
-                badge_color, badge_text = '#f9a825', '🟡 주목'
-            else:
-                badge_color, badge_text = '#aaa', '⚪ 일반'
-            # 투자자 영향도 뱃지
-            if inv_score >= 20:
-                inv_badge = '<span style="background:#d93025; color:#fff; padding:2px 6px; border-radius:10px; font-size:10px; margin-left:5px;">📈 투자영향 높음</span>'
-            elif inv_score >= 10:
-                inv_badge = '<span style="background:#f9a825; color:#fff; padding:2px 6px; border-radius:10px; font-size:10px; margin-left:5px;">📊 투자영향 중간</span>'
-            else:
-                inv_badge = ''
-            items_html += f"""
-            <div style='margin-bottom:25px; border-bottom:1px solid #eee; padding-bottom:15px;'>
-                <div style='display:flex; align-items:center; flex-wrap:wrap; margin-bottom:8px;'>
-                    <span style='background:{badge_color}; color:#fff; padding:2px 8px; border-radius:10px; font-size:11px; margin-right:8px;'>{badge_text}</span>
-                    <span style='color:#999; font-size:12px;'>{source_name} · 종합 {score}점</span>
-                    {inv_badge}
-                </div>
-                <h3 style='color:#1a73e8; margin:0 0 10px 0;'>{ko_title}</h3>
-                <p style='color:#555; font-size:14px; margin:0 0 10px 0;'>{ko_desc}</p>
-                <a href='{art["url"]}' style='color:#1a73e8; text-decoration:none; font-size:13px;'>원문보기(EN) →</a>
-            </div>
-            """
-        body = f"<html><body><h2 style='color:#333;'>지난 24시간 주요 테크 뉴스 (AI 선별)</h2>{items_html}</body></html>"
+    has_any = articles_us or articles_jp or articles_cn
+
+    if has_any:
+        body_parts = "<html><body>"
+        body_parts += "<h1 style='color:#333; font-size:22px; margin-bottom:5px;'>지난 24시간 주요 테크 뉴스 (AI 선별)</h1>"
+        body_parts += "<p style='color:#888; font-size:13px; margin-top:0;'>미국·일본·중국 3개국 테크 뉴스를 한눈에</p>"
+        body_parts += _build_section_html("미국 / 글로벌 뉴스", "🇺🇸", articles_us, src_lang='en')
+        body_parts += _build_section_html("일본 테크 뉴스", "🇯🇵", articles_jp, src_lang='ja')
+        body_parts += _build_section_html("중국 테크 뉴스", "🇨🇳", articles_cn, src_lang='zh')
+        body_parts += "</body></html>"
+        body = body_parts
     else:
         body = "<html><body><h2>최근 24시간 내에 수집된 뉴스가 없습니다.</h2><p>검색 범위를 조정하거나 다음 실행을 기다려주세요.</p></body></html>"
 
