@@ -237,15 +237,16 @@ def get_tech_news():
 
 
 def get_japan_news():
-    """일본 테크 뉴스 (상위 3개)"""
+    """일본 관련 테크 뉴스 (영어 기사, 상위 3개) — NewsAPI가 ja 미지원"""
     query = (
-        'AI OR 半導体 OR GPU OR テクノロジー OR 人工知能 '
-        'OR NVIDIA OR ソニー OR トヨタ OR 東京エレクトロン OR ソフトバンク'
+        '(Sony OR Toyota OR SoftBank OR "Tokyo Electron" OR Hitachi '
+        'OR Nintendo OR Panasonic OR NTT OR Rakuten OR "Bank of Japan") '
+        'AND (AI OR semiconductor OR chip OR technology OR investment OR earnings)'
     )
     url = (
         f"https://newsapi.org/v2/everything?"
         f"q={query}&sortBy=publishedAt&pageSize=20"
-        f"&language=ja&apiKey={NEWS_API_KEY}"
+        f"&language=en&apiKey={NEWS_API_KEY}"
     )
 
     try:
@@ -264,27 +265,41 @@ def get_japan_news():
 
 
 def get_china_news():
-    """중국 테크 뉴스 (상위 3개)"""
-    query = (
-        'AI OR 芯片 OR 半导体 OR 人工智能 OR 数据中心 '
+    """중국 관련 테크 뉴스 (중국어 + 영어 병합, 상위 3개)"""
+    all_articles = []
+
+    # 1) 중국어 기사 (zh 지원됨)
+    query_zh = (
+        'AI OR 芯片 OR 半导体 OR 人工智能 '
         'OR 华为 OR 阿里巴巴 OR 腾讯 OR 百度 OR 比亚迪 OR 小米'
     )
-    url = (
+    url_zh = (
         f"https://newsapi.org/v2/everything?"
-        f"q={query}&sortBy=publishedAt&pageSize=20"
+        f"q={query_zh}&sortBy=publishedAt&pageSize=15"
         f"&language=zh&apiKey={NEWS_API_KEY}"
     )
+    # 2) 영어 기사 (중국 기업 키워드)
+    query_en = (
+        '(Huawei OR Alibaba OR Tencent OR Baidu OR BYD OR Xiaomi '
+        'OR "CATL" OR "ByteDance" OR SMIC OR "China semiconductor") '
+        'AND (AI OR chip OR technology OR investment OR earnings)'
+    )
+    url_en = (
+        f"https://newsapi.org/v2/everything?"
+        f"q={query_en}&sortBy=publishedAt&pageSize=15"
+        f"&language=en&apiKey={NEWS_API_KEY}"
+    )
 
-    try:
-        res = requests.get(url)
-        data = res.json()
-        articles = data.get('articles', [])
-    except Exception as e:
-        print(f"[중국] API 요청 에러: {e}")
-        return []
+    for label, url in [("zh", url_zh), ("en", url_en)]:
+        try:
+            res = requests.get(url)
+            data = res.json()
+            all_articles.extend(data.get('articles', []))
+        except Exception as e:
+            print(f"[중국-{label}] API 요청 에러: {e}")
 
-    top = _filter_and_rank(articles, top_n=3)
-    print(f"[중국] 전체 {len(data.get('articles', []))}건 → 최종 {len(top)}건")
+    top = _filter_and_rank(all_articles, top_n=3)
+    print(f"[중국] 전체 {len(all_articles)}건 → 최종 {len(top)}건")
     for i, a in enumerate(top, 1):
         print(f"  {i}. {a.get('title', '')[:60]}... ({_source_domain(a)})")
     return top
@@ -322,7 +337,7 @@ def _build_article_html(art, src_lang='en', label_suffix=''):
     else:
         inv_badge = ''
 
-    lang_labels = {'en': 'EN', 'ja': 'JP', 'zh-CN': 'CN'}
+    lang_labels = {'en': 'EN', 'auto': 'CN/EN', 'zh-CN': 'CN'}
     orig_label = lang_labels.get(src_lang, src_lang.upper())
 
     return f"""
@@ -366,8 +381,8 @@ if __name__ == "__main__":
         body_parts += "<h1 style='color:#333; font-size:22px; margin-bottom:5px;'>지난 24시간 주요 테크 뉴스 (AI 선별)</h1>"
         body_parts += "<p style='color:#888; font-size:13px; margin-top:0;'>미국·일본·중국 3개국 테크 뉴스를 한눈에</p>"
         body_parts += _build_section_html("미국 / 글로벌 뉴스", "🇺🇸", articles_us, src_lang='en')
-        body_parts += _build_section_html("일본 테크 뉴스", "🇯🇵", articles_jp, src_lang='ja')
-        body_parts += _build_section_html("중국 테크 뉴스", "🇨🇳", articles_cn, src_lang='zh-CN')
+        body_parts += _build_section_html("일본 테크 뉴스", "🇯🇵", articles_jp, src_lang='en')
+        body_parts += _build_section_html("중국 테크 뉴스", "🇨🇳", articles_cn, src_lang='auto')
         body_parts += "</body></html>"
         body = body_parts
     else:
